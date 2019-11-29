@@ -1,0 +1,113 @@
+%% A configuration file may have zero-or-more lines.
+config <- line* %{
+    [ L || L <- Node, is_setting(L) ]
+%};
+
+%% Lines are actual settings, comments, or horizontal whitespace,
+%% terminated by an end-of-line or end-of-file.
+line <- ((setting / comment / ws+) (crlf / eof)) / crlf %{
+    case Node of
+        [ Line, _EOL ] -> Line;
+        Line -> Line
+    end
+%};
+
+%% A setting is a key and a value, joined by =, with surrounding
+%% whitespace ignored.
+setting <- ws* key ws* "=" ws* ((list_value / double_quote_value / kv_value / value) (", " / ",")?)+ ws* comment? %{
+    [ _, Key, _, _Eq, _, Value, _, _ ] = Node,
+    {Key, lists:map(fun([V, _]) -> V end, Value)}
+%};
+
+%% A key is a series of dot-separated identifiers.
+key <- head:(keyword / double_quote_value) tail:("." (keyword / double_quote_value))* %{
+    [{head, H}, {tail, T}] = Node,
+    [unicode:characters_to_list(H) | [unicode:characters_to_list(W) || [_, W] <- T]]
+%};
+
+%% A list of values surrounded by brackets, keys are always atoms
+list_value <- (!((ws* crlf) / comment) "[" (((kv_value / (double_quote_value / value_in_list)) (", " / ",")?))+ "]") %{
+    [_, _OpenBracket, Elems, _CloseBracket] = Node,
+    lists:map(fun([Item, _]) -> Item end, Elems)
+%};
+
+%% A value surrounded by double quotes
+double_quote_value <- (!((ws* crlf) / comment) '"' ('\\"' / (!'"' .))* '"') %{
+    [_, _OpenQuote, Chars, _CloseQuote] = Node,
+    Bin = iolist_to_binary(Chars),
+    Unescaped = unescape_double_quotes(Bin),
+    binary_to_list(Unescaped)
+%};
+
+% A key/value pair
+kv_value <- (!((ws* crlf) / comment) (kv_key ws* "=" ws* ((double_quote_value / value_in_list)))) %{
+   [_, [Key, _, _Eq, _, Value]] = Node,
+   {Key, Value}
+%};
+
+% A key for a kv_pair
+kv_key <- (!(ws / crlf / "=") .)+ %{
+    Bin = iolist_to_binary(Node),
+    binary_to_list(Bin)
+%};
+
+%% A value is any character, with trailing whitespace stripped.
+value <- (!((ws* crlf) / comment) ("\\\\" / '\\,' / (!',' .)))+ %{
+    Bin = iolist_to_binary(Node),
+    binary_to_list(Bin)
+%};
+
+%% A value is any character, except those which continue/close a list, with trailing whitespace stripped
+value_in_list <- (!(ws / crlf / "," / "]") .)+ %{
+    Bin = iolist_to_binary(Node),
+    binary_to_list(Bin)
+%};
+
+%% A comment is any line that begins with a # sign, leading whitespace
+%% allowed.
+comment <- ws* "#" (!crlf .)* `comment`;
+
+%% A keyword is one or more of letters, numbers and dashes or
+%% underscores.
+keyword <- ("\\." / [A-Za-z0-9_-])+ %{
+    Unescaped = unescape_dots(iolist_to_binary(Node)),
+    binary_to_list(Unescaped)
+%};
+
+%% An end-of-line is signified by a line-feed with an optional
+%% preceding carriage-return.
+crlf <- "\r"? "\n" `ws`;
+
+%% The end-of-file is where no character matches.
+eof <- !. `ws`;
+
+%% Whitespace is either spaces or tabs.
+ws <- [ \t] `ws`;
+
+% Erlang code
+%{
+-define(line, true).
+-define(FMT(F,A), lists:flatten(io_lib:format(F,A))).
+
+%% @doc Only let through lines that are not comments or whitespace.
+is_setting(ws) -> false;
+is_setting(comment) -> false;
+is_setting(_) -> true.
+
+%% @doc Removes escaped dots from keys
+unescape_dots(<<$\\, $., Rest/binary>>) ->
+    Unescaped = unescape_dots(Rest),
+    <<$., Unescaped/binary>>;
+unescape_dots(<<>>) -> <<>>;
+unescape_dots(<<C/utf8, Rest/binary>>) ->
+    Unescaped = unescape_dots(Rest),
+    <<C/utf8, Unescaped/binary>>.
+
+unescape_double_quotes(<<$\\, $", Rest/binary>>) ->
+    Unescaped = unescape_double_quotes(Rest),
+    <<$", Unescaped/binary>>;
+unescape_double_quotes(<<>>) -> <<>>;
+unescape_double_quotes(<<C/utf8, Rest/binary>>) ->
+    Unescaped = unescape_double_quotes(Rest),
+    <<C/utf8, Unescaped/binary>>.
+%}
